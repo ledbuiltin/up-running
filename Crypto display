@@ -1,0 +1,291 @@
+//Program modified for ESP 01 (black board)
+//Changed coind and units
+
+/*******************************************************************
+    A project to display crypto currency prices using an ESP8266
+    Main Hardware:
+    - NodeMCU Development Board (Any ESP8266 dev board will work)
+    - OLED I2C Display (SH1106)
+    Written by Brian Lough
+    https://www.youtube.com/channel/UCezJOfu7OtqGzd5xrP3q6WA
+ *******************************************************************/
+
+// ----------------------------
+// Standard Libraries - Already Installed if you have ESP8266 set up
+// ----------------------------
+
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <Wire.h>
+
+//needed for library WIFIMANAGER basado en https://www.youtube.com/watch?v=A-P20vC7zq4
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager  > https://github.com/tzapu/WiFiManager/blob/master/examples/AutoConnect/AutoConnect.ino
+
+// ----------------------------
+// Additional Libraries - each one of these will need to be installed.
+// ----------------------------
+
+#include <CoinMarketCapApi.h>
+// For Integrating with the CoinMarketCap.com API
+// Available on the library manager (Search for "CoinMarket")
+// https://github.com/witnessmenow/arduino-coinmarketcap-api
+//Codigo libreria_ https://github.com/witnessmenow/arduino-coinmarketcap-api/blob/5b84ccbd05e718688d29ddbaa623757b5965b3cd/src/CoinMarketCapApi.h
+
+#include "SH1106.h"
+
+// The driver for the OLED display
+// Available on the library manager (Search for "oled ssd1306") instalar la de Daniel Eichhorn
+// https://github.com/squix78/esp8266-oled-ssd1306
+
+#include <ArduinoJson.h>
+// Required by the CoinMarketCapApi Library for parsing the response
+// Available on the library manager (Search for "arduino json")
+// https://github.com/squix78/esp8266-oled-ssd1306
+
+
+//Basado en https://www.youtube.com/watch?v=2IRsOFaWfho
+//Instrucciones:  https://github.com/witnessmenow/simple-arduino-crypto-display
+
+// ----------------------------
+// Configurations - Update these
+// ----------------------------
+
+char ssid[] = "UPC628450";       // your network SSID (name)
+char password[] = "LXLKQLIA";  // your network key
+
+// Pins based on your wiring
+//#define SCL_PIN D1  
+//#define SDA_PIN D2
+
+//Para NODEMCU
+//#define SCL_PIN D5   //Venian por defecto en el  programa
+//#define SDA_PIN D3
+
+///* Con ESP01 -> estas connexiones las saque de aqui: https://diyprojects.io/connect-i2c-ssd1306-oled-display-esp-01-esp8266/#.WfSdBeZ95hE
+#define SCL_PIN 0
+#define SDA_PIN 2
+
+
+// CoinMarketCap's limit is "no more than 10 per minute"
+// Make sure to factor in if you are requesting more than one coin.
+// We'll request a new value just before we change the screen so it's the most up to date
+unsigned long screenChangeDelay = 6000; // Every 10 seconds
+
+// Have tested up to 10, can probably do more
+#define MAX_HOLDINGS 10
+
+#define CURRENCY "eur" //See CoinMarketCap.com for currency options (usd, gbp etc)
+#define CURRENCY2 "btc"  // Linea que he añadido como prueba
+#define CURRENCY_SYMBOL "B" // Euro doesn't seem to work, $ and £ do
+
+// You also need to add your crypto currecnies in the setup function
+
+// ----------------------------
+// End of area you need to change
+// ----------------------------
+
+
+
+WiFiClientSecure client;
+CoinMarketCapApi api(client);
+
+SH1106 display(0x3c, SDA_PIN, SCL_PIN);
+
+unsigned long screenChangeDue;
+
+struct Holding {
+  String tickerId;
+  float amount;
+  bool inUse;
+  CMCTickerResponse lastResponse;
+};
+
+Holding holdings[MAX_HOLDINGS];
+
+int currentIndex = -1;
+String ipAddressString;
+
+void addNewHolding(String tickerId, float amount = 0) {
+  int index = getNextFreeHoldingIndex();
+  if (index > -1) {
+    holdings[index].tickerId = tickerId;
+    holdings[index].amount = amount;
+    holdings[index].inUse = true;
+  }
+}
+
+void setup() {
+
+  Serial.begin(115200);
+
+  
+
+  // ----------------------------
+  // Holdings - Add your currencies here
+  // ----------------------------
+  // Go to the currencies coinmarketcap.com page
+  // and take the tickerId from the URL (use bitcoin or ethereum as an example)
+  
+  addNewHolding("bitcoin");
+  addNewHolding("viacoin");
+  addNewHolding("ethereum");
+  addNewHolding("ripple");
+  addNewHolding("iota");
+  addNewHolding("dubaicoin-dbix");
+  addNewHolding("qtum");
+  addNewHolding("omisego");
+
+  // ----------------------------
+  // Everything below can be thinkered with if you want but should work as is!
+  // ----------------------------
+
+  // Initialising the display
+  display.init();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(64, 0, F("Ardilla"));
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(64, 18, F("Crypto saltos"));
+  display.display();
+  
+    //WiFiManager
+    //Local intialization. Once its business is done, there is no need to keep it around
+    //WiFiManager wifiManager;
+    //wifiManager.autoConnect("Tiruri");
+  
+// Ya no hace falta con el wifimanager
+
+  // Set WiFi to station mode and disconnect from an AP if it was Previously
+  // connected
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+
+  // Attempt to connect to Wifi network:
+  Serial.print("Connecting Wifi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  
+  
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  IPAddress ip = WiFi.localIP();
+  Serial.println(ip);
+  ipAddressString = ip.toString();
+}
+
+int getNextFreeHoldingIndex() {
+  for (int i = 0; i < MAX_HOLDINGS; i++) {
+    if (!holdings[i].inUse) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+int getNextIndex() {
+  for (int i = currentIndex + 1; i < MAX_HOLDINGS; i++) {
+    if (holdings[i].inUse) {
+      return i;
+    }
+  }
+
+  for (int j = 0; j <= currentIndex; j++) {
+    if (holdings[j].inUse) {
+      return j;
+    }
+  }
+
+  return -1;
+}
+
+void displayHolding(int index) {
+
+  CMCTickerResponse response = holdings[index].lastResponse;
+
+  display.clear();
+//Mostramos la moneda en el encabezado
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(64, 0, response.symbol);    // El display es 128x64 pixeles. Empezamos a escribir de foma centrada en la fila 0 columna 64
+  
+  //Mostramos el su valor actual en el centro
+  display.setFont(ArialMT_Plain_24);
+  double price = response.price_currency;
+  if (price == 0) {
+    price = response.price_usd;
+  }
+  display.drawString(64, 20, formatCurrency(price));
+
+  //Mostramos la variacion abajo
+  display.setFont(ArialMT_Plain_16);
+//  display.setTextAlignment(TEXT_ALIGN_CENTER);
+//  display.drawString(64, 48, " 1h:" + String(response.percent_change_1h) + "%");
+//  display.setTextAlignment(TEXT_ALIGN_CENTER);
+ // display.drawString(64, 48, "24h: " + String(response.percent_change_24h) + "%");
+
+//Voy a intentar poner en la ultima fila la variacion por hora y por dia
+display.setTextAlignment(TEXT_ALIGN_LEFT);
+display.drawString(60, 48, " h:" + String(response.percent_change_1h) + "%");
+display.setTextAlignment(TEXT_ALIGN_RIGHT);
+display.drawString(60, 48, "d:" + String(response.percent_change_24h));
+
+
+  display.display();
+}
+
+void displayMessage(String message){
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.drawStringMaxWidth(0, 0, 128, message);
+  display.display();
+}
+
+String formatCurrency(float price) {
+  String formattedCurrency = CURRENCY_SYMBOL;
+  int pointsAfterDecimal = 6;
+  if (price > 100) {
+    pointsAfterDecimal = 2;
+  } else if (price > 1) {
+    pointsAfterDecimal = 4;
+  }
+  formattedCurrency.concat(String(price, pointsAfterDecimal));
+  return formattedCurrency;
+}
+
+bool loadDataForHolding(int index) {
+  int nextIndex = getNextIndex();
+  if (nextIndex > -1 ) {
+    holdings[index].lastResponse = api.GetTickerInfo(holdings[index].tickerId, CURRENCY2);
+    return holdings[index].lastResponse.error == "";
+  }
+
+  return false;
+}
+
+void loop() {
+  unsigned long timeNow = millis();
+  if ((timeNow > screenChangeDue))  {
+    currentIndex = getNextIndex();
+    if (currentIndex > -1) {
+      if (loadDataForHolding(currentIndex)) {
+        displayHolding(currentIndex);
+      } else {
+        displayMessage(F("Error loading data."));
+      }
+    } else {
+      displayMessage(F("No funds to display. Edit the setup to add them"));
+    }
+    screenChangeDue = timeNow + screenChangeDelay;
+  }
+}
