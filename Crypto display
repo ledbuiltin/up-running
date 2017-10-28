@@ -1,5 +1,8 @@
-//Program modified for ESP 01 (black board)
+//Program modified for ESP 01 (black board) based in https://www.youtube.com/watch?v=2IRsOFaWfho
 //Changed coind and units
+//GPIO0->SCL
+//GPIO2->SDA
+//4,6K pullup to CH_PD. It works also without it
 
 /*******************************************************************
     A project to display crypto currency prices using an ESP8266
